@@ -6,16 +6,24 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include <signal.h>
 
-// Can I use cmocka to mock BSD socket functions??
-// TODO: unit test every code branch
-// TODO: unit test multiple iterations of the while loop, when send() reports
-// fewer bytes written than the message length
+// Waiting on children avoids the creation of zombie processes
+void sigchld_handler(int s) {
+    int saved_errno = errno;
+
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+
+    errno = saved_errno;
+}
 
 int main(char *argv, int argc) {
     int sockfd, newfd, status;
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage client_addr;
+    struct sigaction sa;
     socklen_t addr_size;
     const int TCP_BACKLOG = 128;
     const int YES = 1;
@@ -61,29 +69,44 @@ int main(char *argv, int argc) {
         return 3;
     }
 
-    if (listen(sockfd, TCP_BACKLOG)) {
-        perror("listen");
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+        perror("sigaction");
         return 4;
     }
 
-    addr_size = sizeof client_addr;
-    if ((newfd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_size)) == -1) {
-        perror("accept");
-        close(sockfd);
+    if (listen(sockfd, TCP_BACKLOG)) {
+        perror("listen");
         return 5;
     }
 
-    while (bytessent < sizeof message) {
-        if ((status = send(newfd, *(&message + bytessent), sizeof message - bytessent, 0)) == -1) {
-            perror("send");
-            close(sockfd);
-            return 6;
-        }
-        bytessent += status;
-    }
+    printf("listening for connections...");
 
-    shutdown(newfd, SHUT_RDWR);
-    close(newfd);
+    while (1) {
+        addr_size = sizeof client_addr;
+        if ((newfd = accept(sockfd, (struct sockaddr *)&client_addr, &addr_size)) == -1) {
+            perror("accept");
+            close(sockfd);
+            continue;
+        }
+
+        if (!fork()) {
+            close(sockfd);
+            while (bytessent < sizeof message) {
+                if ((status = send(newfd, *(&message + bytessent), sizeof message - bytessent, 0)) == -1) {
+                    perror("send");
+                    return 6;
+                }
+                bytessent += status;
+            }
+            shutdown(newfd, SHUT_RDWR);
+            close(newfd);
+            return 0;
+        }
+        close(newfd);
+    }
 
     shutdown(sockfd, SHUT_RDWR);
     close(sockfd);
