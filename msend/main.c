@@ -82,7 +82,7 @@ int main(char *argv, int argc) {
         return 5;
     }
 
-    printf("listening for connections...");
+    printf("listening for connections...\n");
 
     while (1) {
         addr_size = sizeof client_addr;
